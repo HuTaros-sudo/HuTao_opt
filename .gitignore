@@ -1,0 +1,61 @@
+# Local secrets and environment variables
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python caches, test output, and tooling state
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Packages and generated documentation
+build/
+dist/
+site/
+*.egg-info/
+*.egg
+
+# Local editors and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+
+# Notebook checkpoints, logs, and temporary files
+.ipynb_checkpoints/
+*.log
+*.tmp
+*.bak
+~$*
+
+# User-owned artifact inventories (keep the artificial example)
+data/*.json
+!data/sample_inventory.json
+
+# Downloaded Akasha responses and derived analysis contain public-player IDs.
+# They are reproducible local outputs, not source files.
+data/akasha/**
+!data/akasha/.gitkeep

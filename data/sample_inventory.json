@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "id": "sample-flower-001", "slot": "flower", "set_name": "人工セットA", "rarity": 5, "level": 20,
+      "main_stat": {"stat": "hp_flat", "value": 4780},
+      "substats": [
+        {"stat": "crit_rate", "value": 0.105},
+        {"stat": "crit_dmg", "value": 0.14},
+        {"stat": "hp_percent", "value": 0.10},
+        {"stat": "elemental_mastery", "value": 40}
+      ]
+    },
+    {
+      "id": "sample-plume-001", "slot": "plume", "set_name": "人工セットA", "rarity": 5, "level": 20,
+      "initial_substat_count": 4,
+      "main_stat": {"stat": "atk_flat", "value": 311},
+      "substats": [
+        {"stat": "crit_rate", "value": 0.105, "initial_value": 0.035},
+        {"stat": "crit_dmg", "value": 0.14, "initial_value": 0.07},
+        {"stat": "hp_percent", "value": 0.10, "initial_value": 0.05},
+        {"stat": "elemental_mastery", "value": 40, "initial_value": 20}
+      ]
+    },
+    {
+      "id": "sample-sands-001", "slot": "sands", "set_name": "人工セットA", "rarity": 5, "level": 20,
+      "main_stat": {"stat": "hp_percent", "value": 0.466},
+      "substats": [
+        {"stat": "crit_rate", "value": 0.07, "initial_value": 0.035},
+        {"stat": "crit_dmg", "value": 0.14, "initial_value": null},
+        {"stat": "atk_percent", "value": 0.10},
+        {"stat": "elemental_mastery", "value": 40}
+      ]
+    },
+    {
+      "id": "sample-goblet-001", "slot": "goblet", "set_name": "人工セットB", "rarity": 5, "level": 20,
+      "main_stat": {"stat": "pyro_dmg", "value": 0.466},
+      "substats": [
+        {"stat": "crit_rate", "value": 0.07},
+        {"stat": "crit_dmg", "value": 0.21},
+        {"stat": "hp_percent", "value": 0.10},
+        {"stat": "def_flat", "value": 20}
+      ]
+    },
+    {
+      "id": "sample-circlet-001", "slot": "circlet", "set_name": "人工セットA", "rarity": 5, "level": 20,
+      "main_stat": {"stat": "crit_dmg", "value": 0.622},
+      "substats": [
+        {"stat": "crit_rate", "value": 0.105},
+        {"stat": "hp_percent", "value": 0.10},
+        {"stat": "elemental_mastery", "value": 40},
+        {"stat": "energy_recharge", "value": 0.05}
+      ]
+    }
+  ]
+}
