@@ -18,10 +18,12 @@ from genshin_opt.dust_defaults import (DEFAULT_DUST_ROLL_PROBABILITIES_PERCENT,
 from genshin_opt.dust_input import reshape_conditions_from_dict  # noqa: E402
 from genshin_opt.dust_optimizer import ReshapeDecision, analyze_reshape, replace_inventory_artifact  # noqa: E402
 from genshin_opt.akasha import ScenarioConfig, score_hutao_akasha  # noqa: E402
-from genshin_opt.models import Artifact, Inventory, Slot, Stat, Substat  # noqa: E402
+from genshin_opt.models import Artifact, Inventory, Slot, Stat, StatValue, Substat  # noqa: E402
 from genshin_opt.optimizer import OptimizationError, at_least_set_pieces, optimize  # noqa: E402
+from genshin_opt.reshape_adoption import (AdoptionVerdict, compare_artifact_adoption)  # noqa: E402
 from genshin_opt.storage import loads_inventory  # noqa: E402
-from genshin_opt.validation import PERCENT_TYPES, ValidationError, validate_for_reshape  # noqa: E402
+from genshin_opt.validation import (MAIN_TYPES, PERCENT_TYPES, SUBSTAT_TYPES, ValidationError,  # noqa: E402
+                                    validate_artifact, validate_for_reshape)
 
 
 STAT_LABELS = {
@@ -73,6 +75,76 @@ def classify_crimson_witch(inventory: Inventory, witch_set_name: str) -> Invento
                       for artifact in inventory.artifacts)
     return Inventory(inventory.schema_version, artifacts)
 
+
+
+
+def _display_stat_value(stat: Stat, value: float) -> float:
+    return value * 100 if stat in PERCENT_TYPES else value
+
+
+def _internal_stat_value(stat: Stat, value: float) -> float:
+    return value / 100 if stat in PERCENT_TYPES else value
+
+
+def _set_default_widget_value(key: str, value: object) -> None:
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+def artifact_input(prefix: str, title: str, default: Artifact) -> Artifact:
+    """既存Artifactモデルへ直接変換する4サブステータス入力UI。"""
+    st.markdown(f"#### {title}")
+    slot_key, set_key = f"{prefix}-slot", f"{prefix}-set-name"
+    _set_default_widget_value(slot_key, default.slot)
+    _set_default_widget_value(set_key, default.set_name)
+    slot_column, set_column = st.columns(2)
+    slot = slot_column.selectbox("slot", tuple(Slot), format_func=lambda value: value.value, key=slot_key)
+    set_name = set_column.text_input("set_name", key=set_key)
+
+    main_stat_key, main_value_key = f"{prefix}-main-stat", f"{prefix}-main-value"
+    main_options = tuple(sorted(MAIN_TYPES[slot], key=lambda value: value.value))
+    if main_stat_key not in st.session_state or st.session_state[main_stat_key] not in main_options:
+        st.session_state[main_stat_key] = default.main_stat.stat if default.main_stat.stat in main_options else main_options[0]
+    main_stat_column, main_value_column = st.columns(2)
+    main_stat = main_stat_column.selectbox("main stat", main_options,
+                                           format_func=lambda value: STAT_LABELS.get(value, value.value), key=main_stat_key)
+    _set_default_widget_value(main_value_key, _display_stat_value(default.main_stat.stat, default.main_stat.value))
+    main_unit = "%" if main_stat in PERCENT_TYPES else "実数値"
+    main_value_display = main_value_column.number_input(f"main stat値（{main_unit}）", min_value=0.0,
+                                                         step=0.1, key=main_value_key)
+
+    substats = []
+    substat_options = tuple(sorted(SUBSTAT_TYPES, key=lambda value: value.value))
+    for index in range(4):
+        default_substat = default.substats[index]
+        stat_key, value_key = f"{prefix}-substat-{index}-stat", f"{prefix}-substat-{index}-value"
+        _set_default_widget_value(stat_key, default_substat.stat)
+        _set_default_widget_value(value_key, _display_stat_value(default_substat.stat, default_substat.value))
+        stat_column, value_column = st.columns(2)
+        stat = stat_column.selectbox(f"substat {index + 1}", substat_options,
+                                     format_func=lambda value: STAT_LABELS.get(value, value.value), key=stat_key)
+        unit = "%" if stat in PERCENT_TYPES else "実数値"
+        value_display = value_column.number_input(f"substat {index + 1}値（{unit}）", min_value=0.0,
+                                                   step=0.1, key=value_key)
+        substats.append(Substat(stat, _internal_stat_value(stat, value_display)))
+    return Artifact(default.id, slot, set_name, 5, 20,
+                    StatValue(main_stat, _internal_stat_value(main_stat, main_value_display)), tuple(substats))
+
+
+def _artifact_input_suffixes() -> list[str]:
+    suffixes = ["slot", "set-name", "main-stat", "main-value"]
+    suffixes.extend(f"substat-{index}-{field}" for index in range(4) for field in ("stat", "value"))
+    return suffixes
+
+
+def copy_artifact_input_state(source_prefix: str, destination_prefix: str) -> None:
+    for suffix in _artifact_input_suffixes():
+        st.session_state[f"{destination_prefix}-{suffix}"] = st.session_state[f"{source_prefix}-{suffix}"]
+
+
+def clear_artifact_input_state(prefix: str) -> None:
+    for suffix in _artifact_input_suffixes():
+        st.session_state.pop(f"{prefix}-{suffix}", None)
 
 st.set_page_config(page_title="原神 聖遺物最適化ツール", layout="wide")
 st.title("原神 聖遺物最適化ツール")
@@ -145,128 +217,176 @@ count_column.metric("評価した組み合わせ", original_best.combinations_ev
 st.dataframe(artifact_rows(original_best.artifacts), use_container_width=True, hide_index=True)
 
 st.subheader("聖啓の塵")
-candidates = reshape_candidates(scoring_inventory.artifacts)
-if not candidates:
-    st.info("Lv.20、初期3/4種類、全サブステータスのinitial_valueがそろった聖遺物がありません。")
-    st.stop()
+dust_mode = st.radio("計算モード", ("簡易期待値モード", "詳細再構築モード", "再構築結果の採用判定"), horizontal=True)
 
-candidate_by_id = {artifact.id: artifact for artifact in candidates}
-target_id = st.selectbox("再構築する聖遺物", tuple(candidate_by_id),
-                         format_func=lambda artifact_id: f"{artifact_id} ({candidate_by_id[artifact_id].slot.value})")
-target = candidate_by_id[target_id]
-st.write(f"現在値: {display_substats(target)}")
-dust_mode = st.radio("計算モード", ("簡易期待値モード", "詳細再構築モード"), horizontal=True)
-target_stats = tuple(substat.stat for substat in target.substats)
-
-if dust_mode == "簡易期待値モード":
-    st.caption("既定値は初期値です。更新確率と更新幅は編集可能で、変更すると期待Damageへ即時反映されます。")
-    simple_stat = st.selectbox("更新するサブステータス", target_stats,
-                               format_func=lambda stat: STAT_LABELS.get(stat, stat.value))
-    roll_tier = st.selectbox("更新幅の段階", DUST_ROLL_TIERS)
-    tier_index = DUST_ROLL_TIERS.index(roll_tier)
-    default_width = DEFAULT_DUST_ROLL_VALUES_DISPLAY[simple_stat][tier_index]
-    width_unit = "%" if simple_stat in PERCENT_TYPES else "実数値"
-    input_column, width_column = st.columns(2)
-    update_probability_percent = input_column.number_input(
-        "更新確率（%）", min_value=0.0, max_value=100.0, value=DEFAULT_DUST_UPDATE_PROBABILITY_PERCENT,
-        step=0.1, help="初期値。編集可能。0〜100%で入力します。")
-    improvement_width = width_column.number_input(
-        f"更新時の改善幅（{width_unit}）", min_value=0.0, value=float(default_width), step=0.01,
-        key=f"simple-width-{target.id}-{simple_stat.value}-{roll_tier}", help="初期値。編集可能。")
-    internal_width = roll_value_to_internal(simple_stat, improvement_width)
-    updated_substats = tuple(Substat(substat.stat, substat.value + internal_width, substat.initial_value)
-                             if substat.stat == simple_stat else substat for substat in target.substats)
-    successful_artifact = replace(target, substats=updated_substats)
-    successful_inventory = replace_inventory_artifact(scoring_inventory, target.id, successful_artifact)
-    successful_best = optimize(successful_inventory, score_function, constraint)
-    current_damage = original_best.score
-    successful_damage = successful_best.score
-    kept_success_damage = max(current_damage, successful_damage)
-    probability = update_probability_percent / 100
-    expected_damage = probability * kept_success_damage + (1 - probability) * current_damage
-    expected_improvement_rate = expected_damage / current_damage - 1 if current_damage else 0.0
-    first_row = st.columns(4)
-    first_row[0].metric("入力した更新確率", f"{update_probability_percent:.2f}%")
-    first_row[1].metric("入力した更新幅", f"{improvement_width:.2f}{width_unit}")
-    first_row[2].metric("現在Damage", f"{current_damage:.2f}")
-    first_row[3].metric("更新成功時Damage", f"{successful_damage:.2f}")
-    second_row = st.columns(3)
-    second_row[0].metric("失敗時Damage", f"{current_damage:.2f}")
-    second_row[1].metric("期待Damage", f"{expected_damage:.2f}")
-    second_row[2].metric("期待改善率", f"{expected_improvement_rate:.4%}")
-    st.caption("元に戻せるため、失敗時は現在Damageを維持します。成功時も現在Damageより低ければ元を保持します。")
-else:
-    st.caption("全再構築結果を列挙する既存モデルです。4段階の更新確率と更新幅は初期値入りで編集できます。")
-    with st.form("reshape_conditions"):
-        default_selected = tuple(stat for stat in (Stat.CRIT_RATE, Stat.CRIT_DMG) if stat in target_stats)
-        if len(default_selected) < 2:
-            default_selected = target_stats[:2]
-        selected_stats = st.multiselect("優先する追加ステータス（2種類）", target_stats, default=list(default_selected),
-                                        max_selections=2, format_func=lambda stat: STAT_LABELS.get(stat, stat.value))
-        tier = st.selectbox("保証段階", tuple(GuaranteeTier), format_func=lambda value: TIER_LABELS[value])
-        roll_model_id = st.text_input("ロール値モデルID", value="wiki_default_editable")
-        st.caption("更新幅は表示単位です。割合ステータスは%、実数ステータスは実数値で入力します。各確率の合計は100%にします。")
-        roll_inputs: dict[Stat, tuple[list[float], list[float]]] = {}
-        for stat in target_stats:
-            label = STAT_LABELS.get(stat, stat.value)
-            unit = "%" if stat in PERCENT_TYPES else "実数値"
-            st.markdown(f"**{label}（更新幅: {unit}）**")
-            value_columns = st.columns(4)
-            values = [value_columns[index].number_input(
-                f"{label} 更新幅（{roll_tier}）", min_value=0.0,
-                value=float(DEFAULT_DUST_ROLL_VALUES_DISPLAY[stat][index]), step=0.01,
-                key=f"detail-value-{target.id}-{stat.value}-{roll_tier}")
-                for index, roll_tier in enumerate(DUST_ROLL_TIERS)]
-            probability_columns = st.columns(4)
-            probabilities = [probability_columns[index].number_input(
-                f"{label} 更新確率（{roll_tier}、%）", min_value=0.0, max_value=100.0,
-                value=DEFAULT_DUST_ROLL_PROBABILITIES_PERCENT[index], step=0.1,
-                key=f"detail-probability-{target.id}-{stat.value}-{roll_tier}")
-                for index, roll_tier in enumerate(DUST_ROLL_TIERS)]
-            roll_inputs[stat] = (values, probabilities)
-        max_rows = st.number_input("表示する結果の最大件数", min_value=10, max_value=5000, value=100, step=10)
-        calculate = st.form_submit_button("再構築を計算")
-
-    if calculate:
+if dust_mode == "再構築結果の採用判定":
+    st.caption("実際の再構築前後をそれぞれ所持する2つのinventoryを作り、手持ち全体を同じAkasha推定Damageで再最適化します。")
+    adoption_targets = {artifact.id: artifact for artifact in scoring_inventory.artifacts}
+    adoption_target_id = st.selectbox("置換対象の聖遺物", tuple(adoption_targets), key="adoption-target",
+                                      format_func=lambda artifact_id: f"{artifact_id} ({adoption_targets[artifact_id].slot.value})")
+    adoption_target = adoption_targets[adoption_target_id]
+    target_signature = (adoption_target.id, adoption_target.slot, adoption_target.set_name, adoption_target.main_stat)
+    if st.session_state.get("adoption-loaded-target") != target_signature:
+        clear_artifact_input_state("adoption-original")
+        clear_artifact_input_state("adoption-reconstructed")
+        st.session_state["adoption-loaded-target"] = target_signature
+    original_artifact = artifact_input("adoption-original", "元の聖遺物", adoption_target)
+    if st.button("元の聖遺物を再構築後へコピー", key="copy-original-to-reconstructed"):
+        copy_artifact_input_state("adoption-original", "adoption-reconstructed")
+    reconstructed_artifact = artifact_input("adoption-reconstructed", "再構築後の聖遺物", adoption_target)
+    st.caption("コピー後、再構築で変化したsubstatと値を編集してください。slot・set_name・main statは再構築前後で一致する必要があります。")
+    if st.button("採用判定を実行", type="primary", key="compare-artifact-adoption"):
         try:
-            if len(selected_stats) != 2:
-                raise ValidationError("優先する追加ステータスを2種類選んでください")
-            raw_distributions = []
-            for stat in target_stats:
-                values, probabilities = roll_inputs[stat]
-                rolls = [{"value": roll_value_to_internal(stat, value), "probability": probability / 100}
-                         for value, probability in zip(values, probabilities, strict=True) if probability > 0]
-                raw_distributions.append({"stat": stat.value, "rolls": rolls})
-            raw_conditions = {
-                "selected_stats": [stat.value for stat in selected_stats], "guarantee_tier": TIER_INPUT_NAMES[tier],
-                "allocation_model": "go_capped_binomial", "roll_model_id": roll_model_id,
-                "roll_distributions": raw_distributions,
-            }
-            conditions = reshape_conditions_from_dict(raw_conditions)
-            analysis = analyze_reshape(scoring_inventory, target, conditions, score_function, constraint)
-        except (ValidationError, DustError, OptimizationError, ValueError) as error:
-            st.error(f"再構築を計算できません: {error}")
+            validate_artifact(original_artifact, "original")
+            validate_artifact(reconstructed_artifact, "reconstructed")
+            comparison = compare_artifact_adoption(scoring_inventory, adoption_target_id, original_artifact,
+                                                    reconstructed_artifact, score_function, constraint)
+        except (ValidationError, OptimizationError, ValueError) as error:
+            st.error(f"採用判定を計算できません: {error}")
         else:
-            baseline_damage = analysis.original_best.score
-            expected_improvement_rate = analysis.expected_improvement / baseline_damage if baseline_damage else 0.0
-            conditional_improvement = (analysis.expected_improvement / analysis.optimal_set_update_probability
-                                       if analysis.optimal_set_update_probability else 0.0)
-            conditional_improvement_rate = conditional_improvement / baseline_damage if baseline_damage else 0.0
-            update_column, chosen_column, improvement_column, conditional_column = st.columns(4)
-            update_column.metric("更新確率", f"{analysis.optimal_set_update_probability:.2%}")
-            chosen_column.metric("元に戻せることを考慮した期待Damage", f"{analysis.expected_chosen_score:.2f}")
-            improvement_column.metric("期待改善率", f"{expected_improvement_rate:.4%}")
-            conditional_column.metric("更新時だけの平均改善率", f"{conditional_improvement_rate:.4%}")
-            st.caption(f"全{len(analysis.outcomes)}結果。Akasha推定Damageが現在の最適値を厳密に上回る場合だけ再構築後を採用します。")
+            left, right = st.columns(2)
+            with left:
+                st.markdown("### 元へ戻した場合")
+                st.metric("元の場合の最適Akasha推定Damage", f"{comparison.original.best.score:.2f}")
+                st.write(f"対象の元Artifactを使用: {'はい' if comparison.original.target_used else 'いいえ'}")
+                st.dataframe(artifact_rows(comparison.original.best.artifacts), use_container_width=True, hide_index=True)
+            with right:
+                st.markdown("### 再構築後を採用した場合")
+                st.metric("再構築後の最適Akasha推定Damage", f"{comparison.reconstructed.best.score:.2f}")
+                st.write(f"再構築後Artifactを使用: {'はい' if comparison.reconstructed.target_used else 'いいえ'}")
+                st.dataframe(artifact_rows(comparison.reconstructed.best.artifacts), use_container_width=True, hide_index=True)
+            verdict_labels = {
+                AdoptionVerdict.RECONSTRUCTED_BETTER: "再構築後が優位",
+                AdoptionVerdict.ORIGINAL_BETTER: "元の聖遺物が優位",
+                AdoptionVerdict.UNCERTAIN: "差が小さく、現モデルでは判定不確実",
+            }
+            difference_column, improvement_column, verdict_column = st.columns(3)
+            difference_column.metric("Damage差", f"{comparison.damage_difference:+.2f}")
+            improvement_column.metric("改善率", f"{comparison.improvement_percent:+.4f}%")
+            verdict_column.metric("判定", verdict_labels[comparison.verdict])
+            st.caption("±0.5%はゲーム仕様ではなく、現在のAkasha順位再現精度を踏まえた警告閾値です。")
+else:
+    candidates = reshape_candidates(scoring_inventory.artifacts)
+    if not candidates:
+        st.info("Lv.20、初期3/4種類、全サブステータスのinitial_valueがそろった聖遺物がありません。")
+        st.stop()
 
-            sorted_outcomes = sorted(analysis.outcomes, key=lambda item: item.reshape_outcome.probability, reverse=True)
-            rows = []
-            for outcome in sorted_outcomes[:int(max_rows)]:
-                decision = "再構築後を採用" if outcome.decision == ReshapeDecision.APPLY_RESHAPE else "元を保持"
-                rows.append({"確率": outcome.reshape_outcome.probability, "判断": decision,
-                             "再構築後所持品の最適推定Damage": outcome.reshaped_inventory_best.score,
-                             "選択後の推定Damage": outcome.chosen_best.score,
-                             "再構築後サブステータス": display_substats(outcome.reshape_outcome.artifact),
-                             "選択後の最適5部位": " / ".join(item.id for item in outcome.chosen_best.artifacts)})
-            st.dataframe(rows, use_container_width=True, hide_index=True,
-                         column_config={"確率": st.column_config.NumberColumn(format="%.6f")})
+    candidate_by_id = {artifact.id: artifact for artifact in candidates}
+    target_id = st.selectbox("再構築する聖遺物", tuple(candidate_by_id),
+                             format_func=lambda artifact_id: f"{artifact_id} ({candidate_by_id[artifact_id].slot.value})")
+    target = candidate_by_id[target_id]
+    st.write(f"現在値: {display_substats(target)}")
+    target_stats = tuple(substat.stat for substat in target.substats)
+
+    if dust_mode == "簡易期待値モード":
+        st.caption("既定値は初期値です。更新確率と更新幅は編集可能で、変更すると期待Damageへ即時反映されます。")
+        simple_stat = st.selectbox("更新するサブステータス", target_stats,
+                                   format_func=lambda stat: STAT_LABELS.get(stat, stat.value))
+        roll_tier = st.selectbox("更新幅の段階", DUST_ROLL_TIERS)
+        tier_index = DUST_ROLL_TIERS.index(roll_tier)
+        default_width = DEFAULT_DUST_ROLL_VALUES_DISPLAY[simple_stat][tier_index]
+        width_unit = "%" if simple_stat in PERCENT_TYPES else "実数値"
+        input_column, width_column = st.columns(2)
+        update_probability_percent = input_column.number_input(
+            "更新確率（%）", min_value=0.0, max_value=100.0, value=DEFAULT_DUST_UPDATE_PROBABILITY_PERCENT,
+            step=0.1, help="初期値。編集可能。0〜100%で入力します。")
+        improvement_width = width_column.number_input(
+            f"更新時の改善幅（{width_unit}）", min_value=0.0, value=float(default_width), step=0.01,
+            key=f"simple-width-{target.id}-{simple_stat.value}-{roll_tier}", help="初期値。編集可能。")
+        internal_width = roll_value_to_internal(simple_stat, improvement_width)
+        updated_substats = tuple(Substat(substat.stat, substat.value + internal_width, substat.initial_value)
+                                 if substat.stat == simple_stat else substat for substat in target.substats)
+        successful_artifact = replace(target, substats=updated_substats)
+        successful_inventory = replace_inventory_artifact(scoring_inventory, target.id, successful_artifact)
+        successful_best = optimize(successful_inventory, score_function, constraint)
+        current_damage = original_best.score
+        successful_damage = successful_best.score
+        kept_success_damage = max(current_damage, successful_damage)
+        probability = update_probability_percent / 100
+        expected_damage = probability * kept_success_damage + (1 - probability) * current_damage
+        expected_improvement_rate = expected_damage / current_damage - 1 if current_damage else 0.0
+        first_row = st.columns(4)
+        first_row[0].metric("入力した更新確率", f"{update_probability_percent:.2f}%")
+        first_row[1].metric("入力した更新幅", f"{improvement_width:.2f}{width_unit}")
+        first_row[2].metric("現在Damage", f"{current_damage:.2f}")
+        first_row[3].metric("更新成功時Damage", f"{successful_damage:.2f}")
+        second_row = st.columns(3)
+        second_row[0].metric("失敗時Damage", f"{current_damage:.2f}")
+        second_row[1].metric("期待Damage", f"{expected_damage:.2f}")
+        second_row[2].metric("期待改善率", f"{expected_improvement_rate:.4%}")
+        st.caption("元に戻せるため、失敗時は現在Damageを維持します。成功時も現在Damageより低ければ元を保持します。")
+    else:
+        st.caption("全再構築結果を列挙する既存モデルです。4段階の更新確率と更新幅は初期値入りで編集できます。")
+        with st.form("reshape_conditions"):
+            default_selected = tuple(stat for stat in (Stat.CRIT_RATE, Stat.CRIT_DMG) if stat in target_stats)
+            if len(default_selected) < 2:
+                default_selected = target_stats[:2]
+            selected_stats = st.multiselect("優先する追加ステータス（2種類）", target_stats, default=list(default_selected),
+                                            max_selections=2, format_func=lambda stat: STAT_LABELS.get(stat, stat.value))
+            tier = st.selectbox("保証段階", tuple(GuaranteeTier), format_func=lambda value: TIER_LABELS[value])
+            roll_model_id = st.text_input("ロール値モデルID", value="wiki_default_editable")
+            st.caption("更新幅は表示単位です。割合ステータスは%、実数ステータスは実数値で入力します。各確率の合計は100%にします。")
+            roll_inputs: dict[Stat, tuple[list[float], list[float]]] = {}
+            for stat in target_stats:
+                label = STAT_LABELS.get(stat, stat.value)
+                unit = "%" if stat in PERCENT_TYPES else "実数値"
+                st.markdown(f"**{label}（更新幅: {unit}）**")
+                value_columns = st.columns(4)
+                values = [value_columns[index].number_input(
+                    f"{label} 更新幅（{roll_tier}）", min_value=0.0,
+                    value=float(DEFAULT_DUST_ROLL_VALUES_DISPLAY[stat][index]), step=0.01,
+                    key=f"detail-value-{target.id}-{stat.value}-{roll_tier}")
+                    for index, roll_tier in enumerate(DUST_ROLL_TIERS)]
+                probability_columns = st.columns(4)
+                probabilities = [probability_columns[index].number_input(
+                    f"{label} 更新確率（{roll_tier}、%）", min_value=0.0, max_value=100.0,
+                    value=DEFAULT_DUST_ROLL_PROBABILITIES_PERCENT[index], step=0.1,
+                    key=f"detail-probability-{target.id}-{stat.value}-{roll_tier}")
+                    for index, roll_tier in enumerate(DUST_ROLL_TIERS)]
+                roll_inputs[stat] = (values, probabilities)
+            max_rows = st.number_input("表示する結果の最大件数", min_value=10, max_value=5000, value=100, step=10)
+            calculate = st.form_submit_button("再構築を計算")
+
+        if calculate:
+            try:
+                if len(selected_stats) != 2:
+                    raise ValidationError("優先する追加ステータスを2種類選んでください")
+                raw_distributions = []
+                for stat in target_stats:
+                    values, probabilities = roll_inputs[stat]
+                    rolls = [{"value": roll_value_to_internal(stat, value), "probability": probability / 100}
+                             for value, probability in zip(values, probabilities, strict=True) if probability > 0]
+                    raw_distributions.append({"stat": stat.value, "rolls": rolls})
+                raw_conditions = {
+                    "selected_stats": [stat.value for stat in selected_stats], "guarantee_tier": TIER_INPUT_NAMES[tier],
+                    "allocation_model": "go_capped_binomial", "roll_model_id": roll_model_id,
+                    "roll_distributions": raw_distributions,
+                }
+                conditions = reshape_conditions_from_dict(raw_conditions)
+                analysis = analyze_reshape(scoring_inventory, target, conditions, score_function, constraint)
+            except (ValidationError, DustError, OptimizationError, ValueError) as error:
+                st.error(f"再構築を計算できません: {error}")
+            else:
+                baseline_damage = analysis.original_best.score
+                expected_improvement_rate = analysis.expected_improvement / baseline_damage if baseline_damage else 0.0
+                conditional_improvement = (analysis.expected_improvement / analysis.optimal_set_update_probability
+                                           if analysis.optimal_set_update_probability else 0.0)
+                conditional_improvement_rate = conditional_improvement / baseline_damage if baseline_damage else 0.0
+                update_column, chosen_column, improvement_column, conditional_column = st.columns(4)
+                update_column.metric("更新確率", f"{analysis.optimal_set_update_probability:.2%}")
+                chosen_column.metric("元に戻せることを考慮した期待Damage", f"{analysis.expected_chosen_score:.2f}")
+                improvement_column.metric("期待改善率", f"{expected_improvement_rate:.4%}")
+                conditional_column.metric("更新時だけの平均改善率", f"{conditional_improvement_rate:.4%}")
+                st.caption(f"全{len(analysis.outcomes)}結果。Akasha推定Damageが現在の最適値を厳密に上回る場合だけ再構築後を採用します。")
+
+                sorted_outcomes = sorted(analysis.outcomes, key=lambda item: item.reshape_outcome.probability, reverse=True)
+                rows = []
+                for outcome in sorted_outcomes[:int(max_rows)]:
+                    decision = "再構築後を採用" if outcome.decision == ReshapeDecision.APPLY_RESHAPE else "元を保持"
+                    rows.append({"確率": outcome.reshape_outcome.probability, "判断": decision,
+                                 "再構築後所持品の最適推定Damage": outcome.reshaped_inventory_best.score,
+                                 "選択後の推定Damage": outcome.chosen_best.score,
+                                 "再構築後サブステータス": display_substats(outcome.reshape_outcome.artifact),
+                                 "選択後の最適5部位": " / ".join(item.id for item in outcome.chosen_best.artifacts)})
+                st.dataframe(rows, use_container_width=True, hide_index=True,
+                             column_config={"確率": st.column_config.NumberColumn(format="%.6f")})

@@ -67,3 +67,27 @@ def test_app_calculates_reshape_and_optimal_set_decision():
     assert "元に戻せることを考慮した期待Damage" in metric_labels
     assert "期待改善率" in metric_labels
     assert "更新時だけの平均改善率" in metric_labels
+
+
+def test_adoption_gui_copies_original_and_uses_akasha_score() -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    app = AppTest.from_file(str(app_path)).run(timeout=15)
+    app.radio[0].set_value("再構築結果の採用判定").run(timeout=15)
+    original_value = next(field for field in app.number_input if field.label.startswith("substat 1値"))
+    original_value.set_value(12.34).run(timeout=15)
+    copy_button = next(button for button in app.button if button.label == "元の聖遺物を再構築後へコピー")
+    copy_button.click().run(timeout=15)
+    matching = [field.value for field in app.number_input if field.label.startswith("substat 1値")]
+    assert matching == [12.34, 12.34]
+    compare_button = next(button for button in app.button if button.label == "採用判定を実行")
+    compare_button.click().run(timeout=15)
+    metric_labels = {metric.label for metric in app.metric}
+    assert "元の場合の最適Akasha推定Damage" in metric_labels
+    assert "再構築後の最適Akasha推定Damage" in metric_labels
+    assert "判定" in metric_labels
+    assert any(metric.label == "判定" and metric.value == "差が小さく、現モデルでは判定不確実" for metric in app.metric)
+    source = app_path.read_text(encoding="utf-8")
+    assert "compare_artifact_adoption(scoring_inventory" in source
+    assert "reconstructed_artifact, score_function, constraint" in source
+    assert not app.exception
+    assert not app.error
