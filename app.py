@@ -17,7 +17,8 @@ from genshin_opt.dust_defaults import (DEFAULT_DUST_ROLL_PROBABILITIES_PERCENT,
                                        roll_value_to_internal)  # noqa: E402
 from genshin_opt.dust_input import reshape_conditions_from_dict  # noqa: E402
 from genshin_opt.dust_optimizer import ReshapeDecision, analyze_reshape, replace_inventory_artifact  # noqa: E402
-from genshin_opt.akasha import ScenarioConfig, score_hutao_akasha  # noqa: E402
+from genshin_opt.akasha import (HOMA_R1_CALIBRATION, ScenarioConfig, calibrate_score,  # noqa: E402
+                                 comparison_confidence, score_hutao_akasha)
 from genshin_opt.models import Artifact, Inventory, Slot, Stat, StatValue, Substat  # noqa: E402
 from genshin_opt.optimizer import OptimizationError, at_least_set_pieces, optimize  # noqa: E402
 from genshin_opt.reshape_adoption import (AdoptionVerdict, compare_artifact_adoption)  # noqa: E402
@@ -171,6 +172,18 @@ st.caption("選択したset_nameを火魔女、それ以外を自由枠として
 
 config = ScenarioConfig()
 score_function = lambda build: score_hutao_akasha(build, config).aggregate_score
+calibration_enabled = st.checkbox(
+    "Akasha表示補正を使用", value=True,
+    help="Homa R1 leaderboardの保存済み20 buildから得た表示専用scaleです。optimizerの選択には影響しません。")
+
+
+def display_damage(core_damage: float) -> float:
+    if not calibration_enabled:
+        return core_damage
+    return calibrate_score(core_damage, HOMA_R1_CALIBRATION, "1000004605", "Staff of Homa R1").calibrated_score
+
+
+damage_label = "Akasha較正推定Damage" if calibration_enabled else "Core推定Damage"
 
 with st.expander("現在装備を選択", expanded=False):
     current_artifacts = []
@@ -184,18 +197,29 @@ with st.expander("現在装備を選択", expanded=False):
 current_build = tuple(current_artifacts)
 current_score = score_hutao_akasha(current_build, config)
 if current_score.is_estimate:
-    st.warning("現在の計算モデルはAkashaを完全再現したものではありません。画面のDamageは「Akasha推定Damage」です。")
+    st.warning("現在の計算モデルはAkashaを完全再現したものではありません。較正値も経験的な表示推定です。")
 
 st.markdown("#### 現在装備")
 current_columns = st.columns(5)
-current_columns[0].metric("Akasha推定Damage", f"{current_score.aggregate_score:.2f}")
+current_columns[0].metric(damage_label, f"{display_damage(current_score.aggregate_score):.2f}")
 current_columns[1].metric("N1 non-vape Avg DMG", f"{current_score.n1_non_vape_avg:.2f}")
 current_columns[2].metric("N1 vape Avg DMG", f"{current_score.n1_vape_avg:.2f}")
 current_columns[3].metric("CA vape Avg DMG", f"{current_score.ca_vape_avg:.2f}")
 current_columns[4].metric("Q vape Avg DMG", f"{current_score.q_vape_avg:.2f}")
-st.caption(f"model status: {current_score.debug_breakdown['model_status']}")
+st.caption("Core Model v1。optimizerと採用判定は常にcore scoreを使用します。")
 
-with st.expander("計算モデルの仮説状態", expanded=False):
+with st.expander("計算モデルと較正の詳細", expanded=False):
+    detail_columns = st.columns(3)
+    detail_columns[0].metric("Core推定Damage", f"{current_score.aggregate_score:.2f}")
+    detail_columns[1].metric("Calibration scale", f"{HOMA_R1_CALIBRATION.scale:.8f}")
+    detail_columns[2].metric("Akasha較正推定Damage", f"{display_damage(current_score.aggregate_score):.2f}")
+    st.write({
+        "Core model": "physics_based_estimate", "Calibration": "empirical_homa_r1_calibration",
+        "Akasha backend": "partially_unresolved", "H3": "unresolved",
+        "Absolute score": "calibrated estimate" if calibration_enabled else "core estimate",
+        "Relative ordering": "empirically validated",
+    })
+    st.caption("Calibration: Homa R1 leaderboard snapshot / 2026-09-13 / 20 builds。別武器には適用しません。")
     st.dataframe([{"仮説": state.hypothesis_id, "状態": state.status.value, "内容": state.summary}
                   for state in current_score.hypothesis_states if state.hypothesis_id.startswith("H")],
                  use_container_width=True, hide_index=True)
@@ -208,12 +232,14 @@ except (ValidationError, OptimizationError) as error:
 
 damage_difference = original_best.score - current_score.aggregate_score
 improvement_rate = damage_difference / current_score.aggregate_score if current_score.aggregate_score else 0.0
+optimizer_confidence = comparison_confidence(improvement_rate)
 score_column, best_column, difference_column, rate_column, count_column = st.columns(5)
-score_column.metric("現在装備の推定Damage", f"{current_score.aggregate_score:.2f}")
-best_column.metric("最適装備の推定Damage", f"{original_best.score:.2f}")
-difference_column.metric("Damage差", f"{damage_difference:+.2f}")
+score_column.metric(f"現在装備の{damage_label}", f"{display_damage(current_score.aggregate_score):.2f}")
+best_column.metric(f"最適装備の{damage_label}", f"{display_damage(original_best.score):.2f}")
+difference_column.metric("表示Damage差", f"{display_damage(original_best.score) - display_damage(current_score.aggregate_score):+.2f}")
 rate_column.metric("改善率", f"{improvement_rate:+.4%}")
 count_column.metric("評価した組み合わせ", original_best.combinations_evaluated)
+st.caption(f"差の信頼度: {optimizer_confidence.label}。{optimizer_confidence.evidence_note} 経験的な目安であり、個別比較の正解確率ではありません。")
 st.dataframe(artifact_rows(original_best.artifacts), use_container_width=True, hide_index=True)
 
 st.subheader("聖啓の塵")
@@ -247,12 +273,12 @@ if dust_mode == "再構築結果の採用判定":
             left, right = st.columns(2)
             with left:
                 st.markdown("### 元へ戻した場合")
-                st.metric("元の場合の最適Akasha推定Damage", f"{comparison.original.best.score:.2f}")
+                st.metric(f"元の場合の最適{damage_label}", f"{display_damage(comparison.original.best.score):.2f}")
                 st.write(f"対象の元Artifactを使用: {'はい' if comparison.original.target_used else 'いいえ'}")
                 st.dataframe(artifact_rows(comparison.original.best.artifacts), use_container_width=True, hide_index=True)
             with right:
                 st.markdown("### 再構築後を採用した場合")
-                st.metric("再構築後の最適Akasha推定Damage", f"{comparison.reconstructed.best.score:.2f}")
+                st.metric(f"再構築後の最適{damage_label}", f"{display_damage(comparison.reconstructed.best.score):.2f}")
                 st.write(f"再構築後Artifactを使用: {'はい' if comparison.reconstructed.target_used else 'いいえ'}")
                 st.dataframe(artifact_rows(comparison.reconstructed.best.artifacts), use_container_width=True, hide_index=True)
             verdict_labels = {
@@ -261,10 +287,12 @@ if dust_mode == "再構築結果の採用判定":
                 AdoptionVerdict.UNCERTAIN: "差が小さく、現モデルでは判定不確実",
             }
             difference_column, improvement_column, verdict_column = st.columns(3)
-            difference_column.metric("Damage差", f"{comparison.damage_difference:+.2f}")
+            difference_column.metric("表示Damage差", f"{display_damage(comparison.reconstructed.best.score) - display_damage(comparison.original.best.score):+.2f}")
             improvement_column.metric("改善率", f"{comparison.improvement_percent:+.4f}%")
             verdict_column.metric("判定", verdict_labels[comparison.verdict])
-            st.caption("±0.5%はゲーム仕様ではなく、現在のAkasha順位再現精度を踏まえた警告閾値です。")
+            adoption_confidence = comparison_confidence(comparison.improvement_percent / 100)
+            st.caption(f"差の信頼度: {adoption_confidence.label}。{adoption_confidence.evidence_note}")
+            st.caption("採用判定と改善率はCore Model v1の相対差を使用します。共通scaleを掛けても改善率は同じです。±0.5%はvalidationに基づく警告閾値です。")
 else:
     candidates = reshape_candidates(scoring_inventory.artifacts)
     if not candidates:
@@ -308,11 +336,11 @@ else:
         first_row = st.columns(4)
         first_row[0].metric("入力した更新確率", f"{update_probability_percent:.2f}%")
         first_row[1].metric("入力した更新幅", f"{improvement_width:.2f}{width_unit}")
-        first_row[2].metric("現在Damage", f"{current_damage:.2f}")
-        first_row[3].metric("更新成功時Damage", f"{successful_damage:.2f}")
+        first_row[2].metric(f"現在{damage_label}", f"{display_damage(current_damage):.2f}")
+        first_row[3].metric(f"更新成功時{damage_label}", f"{display_damage(successful_damage):.2f}")
         second_row = st.columns(3)
-        second_row[0].metric("失敗時Damage", f"{current_damage:.2f}")
-        second_row[1].metric("期待Damage", f"{expected_damage:.2f}")
+        second_row[0].metric("失敗時表示Damage", f"{display_damage(current_damage):.2f}")
+        second_row[1].metric("期待表示Damage", f"{display_damage(expected_damage):.2f}")
         second_row[2].metric("期待改善率", f"{expected_improvement_rate:.4%}")
         st.caption("元に戻せるため、失敗時は現在Damageを維持します。成功時も現在Damageより低ければ元を保持します。")
     else:
@@ -374,7 +402,7 @@ else:
                 conditional_improvement_rate = conditional_improvement / baseline_damage if baseline_damage else 0.0
                 update_column, chosen_column, improvement_column, conditional_column = st.columns(4)
                 update_column.metric("更新確率", f"{analysis.optimal_set_update_probability:.2%}")
-                chosen_column.metric("元に戻せることを考慮した期待Damage", f"{analysis.expected_chosen_score:.2f}")
+                chosen_column.metric("元に戻せることを考慮した期待表示Damage", f"{display_damage(analysis.expected_chosen_score):.2f}")
                 improvement_column.metric("期待改善率", f"{expected_improvement_rate:.4%}")
                 conditional_column.metric("更新時だけの平均改善率", f"{conditional_improvement_rate:.4%}")
                 st.caption(f"全{len(analysis.outcomes)}結果。Akasha推定Damageが現在の最適値を厳密に上回る場合だけ再構築後を採用します。")
@@ -384,8 +412,8 @@ else:
                 for outcome in sorted_outcomes[:int(max_rows)]:
                     decision = "再構築後を採用" if outcome.decision == ReshapeDecision.APPLY_RESHAPE else "元を保持"
                     rows.append({"確率": outcome.reshape_outcome.probability, "判断": decision,
-                                 "再構築後所持品の最適推定Damage": outcome.reshaped_inventory_best.score,
-                                 "選択後の推定Damage": outcome.chosen_best.score,
+                                 "再構築後所持品の最適表示Damage": display_damage(outcome.reshaped_inventory_best.score),
+                                 "選択後の表示Damage": display_damage(outcome.chosen_best.score),
                                  "再構築後サブステータス": display_substats(outcome.reshape_outcome.artifact),
                                  "選択後の最適5部位": " / ".join(item.id for item in outcome.chosen_best.artifacts)})
                 st.dataframe(rows, use_container_width=True, hide_index=True,
