@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from .inventory_view import deduplicate_inventory
 from .models import Artifact, Inventory, Slot, Stat, StatValue, Substat
 from .validation import ValidationError, require, validate_inventory
 
@@ -42,7 +43,7 @@ def inventory_from_dict(data: object) -> Inventory:
         artifacts.append(Artifact(id=raw["id"], slot=parse_enum(Slot, raw["slot"], f"{path}.slot"),
                                   set_name=raw["set_name"], rarity=raw["rarity"], level=raw["level"],
                                   main_stat=main_stat, substats=tuple(substats), initial_substat_count=raw.get("initial_substat_count")))
-    inventory = Inventory(root["schema_version"], tuple(artifacts))
+    inventory = deduplicate_inventory(Inventory(root["schema_version"], tuple(artifacts)))
     validate_inventory(inventory)
     return inventory
 

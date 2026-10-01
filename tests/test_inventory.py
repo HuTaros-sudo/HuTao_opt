@@ -108,8 +108,16 @@ def test_main_stat_must_match_slot(payload):
         inventory_from_dict(payload)
 
 
-def test_duplicate_artifact_ids_rejected(payload):
+def test_fully_duplicate_artifacts_are_removed_even_with_same_id(payload):
     payload["artifacts"].append(copy.deepcopy(payload["artifacts"][0]))
+    inventory = inventory_from_dict(payload)
+    assert len(inventory.artifacts) == 5
+
+
+def test_duplicate_id_with_different_content_is_rejected(payload):
+    duplicate = copy.deepcopy(payload["artifacts"][0])
+    duplicate["substats"][0]["value"] += 0.001
+    payload["artifacts"].append(duplicate)
     with pytest.raises(ValidationError, match=r"artifacts\[5\].id"):
         inventory_from_dict(payload)
 

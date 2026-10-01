@@ -19,6 +19,7 @@ from genshin_opt.dust_input import reshape_conditions_from_dict  # noqa: E402
 from genshin_opt.dust_optimizer import ReshapeDecision, analyze_reshape, replace_inventory_artifact  # noqa: E402
 from genshin_opt.akasha import (HOMA_R1_CALIBRATION, ScenarioConfig, calibrate_score,  # noqa: E402
                                  comparison_confidence, score_hutao_akasha)
+from genshin_opt.inventory_view import artifact_option_label  # noqa: E402
 from genshin_opt.models import Artifact, Inventory, Slot, Stat, StatValue, Substat  # noqa: E402
 from genshin_opt.optimizer import OptimizationError, at_least_set_pieces, optimize  # noqa: E402
 from genshin_opt.reshape_adoption import (AdoptionVerdict, compare_artifact_adoption)  # noqa: E402
@@ -151,7 +152,7 @@ st.set_page_config(page_title="原神 聖遺物最適化ツール", layout="wide
 st.title("原神 聖遺物最適化ツール")
 st.caption("対象: VV Swirl Hyper Tao Combo, Avg DMG / Staff of Homa R1")
 
-sample_json = (PROJECT_ROOT / "data" / "sample_inventory.json").read_text(encoding="utf-8")
+sample_json = (PROJECT_ROOT / "data" / "inventory.json").read_text(encoding="utf-8")
 with st.expander("所持聖遺物JSON", expanded=False):
     inventory_text = st.text_area("JSONを直接編集", value=sample_json, height=320)
 
@@ -192,8 +193,11 @@ with st.expander("現在装備を選択", expanded=False):
         if not slot_artifacts:
             st.error(f"現在装備を選べません。{slot.value}の候補がありません。")
             st.stop()
-        selected_id = st.selectbox(slot.value, tuple(artifact.id for artifact in slot_artifacts), key=f"equipped-{slot.value}")
-        current_artifacts.append(next(artifact for artifact in slot_artifacts if artifact.id == selected_id))
+        artifact_by_id = {artifact.id: artifact for artifact in slot_artifacts}
+        selected_id = st.selectbox(
+            slot.value, tuple(artifact_by_id), key=f"equipped-{slot.value}",
+            format_func=lambda artifact_id, choices=artifact_by_id: artifact_option_label(choices[artifact_id]))
+        current_artifacts.append(artifact_by_id[selected_id])
 current_build = tuple(current_artifacts)
 current_score = score_hutao_akasha(current_build, config)
 if current_score.is_estimate:

@@ -11,6 +11,12 @@ def test_package_import():
     assert genshin_opt.__file__ is not None
 
 
+def set_sample_inventory(app: AppTest) -> AppTest:
+    sample_path = Path(__file__).resolve().parents[1] / "data" / "sample_inventory.json"
+    app.text_area[0].set_value(sample_path.read_text(encoding="utf-8")).run(timeout=15)
+    return app
+
+
 def test_app_startup():
     app_path = Path(__file__).resolve().parents[1] / "app.py"
     app = AppTest.from_file(str(app_path)).run(timeout=15)
@@ -37,7 +43,7 @@ def test_production_gui_does_not_reference_toy_score_and_shares_akasha_evaluator
 
 def test_simple_dust_defaults_are_editable_and_update_expected_damage():
     app_path = Path(__file__).resolve().parents[1] / "app.py"
-    app = AppTest.from_file(str(app_path)).run(timeout=15)
+    app = set_sample_inventory(AppTest.from_file(str(app_path)).run(timeout=15))
     probability = next(field for field in app.number_input if field.label == "更新確率（%）")
     width = next(field for field in app.number_input if field.label.startswith("更新時の改善幅"))
     assert probability.value == 25.0
@@ -55,7 +61,7 @@ def test_simple_dust_defaults_are_editable_and_update_expected_damage():
 
 def test_app_calculates_reshape_and_optimal_set_decision():
     app_path = Path(__file__).resolve().parents[1] / "app.py"
-    app = AppTest.from_file(str(app_path)).run(timeout=15)
+    app = set_sample_inventory(AppTest.from_file(str(app_path)).run(timeout=15))
     app.radio[0].set_value("詳細再構築モード").run(timeout=15)
     for field in app.number_input:
         if "更新幅（" in field.label:
