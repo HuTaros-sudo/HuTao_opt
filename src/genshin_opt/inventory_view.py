@@ -31,6 +31,15 @@ def artifact_option_label(artifact: Artifact) -> str:
     return f"{artifact.id}｜{artifact.set_name}｜メイン: {main}｜{substats}"
 
 
+def artifact_table_row(artifact: Artifact) -> dict[str, str]:
+    """最適化結果の表へID、セット、メイン効果、全サブ効果を表示する。"""
+    return {
+        "部位": artifact.slot.value, "ID": artifact.id, "セット": artifact.set_name,
+        "メイン効果": format_game_stat(artifact.main_stat.stat, artifact.main_stat.value),
+        "サブ効果": " / ".join(format_game_stat(substat.stat, substat.value) for substat in artifact.substats),
+    }
+
+
 def artifact_content_signature(artifact: Artifact) -> tuple[object, ...]:
     """IDと入力順を除き、部位・セット・現在値・再構築用初期値を比較する。"""
     substats = tuple(sorted(

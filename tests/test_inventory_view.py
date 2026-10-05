@@ -1,4 +1,5 @@
-from genshin_opt.inventory_view import artifact_option_label, deduplicate_inventory, format_game_stat
+from genshin_opt.inventory_view import (artifact_option_label, artifact_table_row, deduplicate_inventory,
+                                        format_game_stat)
 from genshin_opt.models import Artifact, Inventory, Slot, Stat, StatValue, Substat
 
 
@@ -24,6 +25,15 @@ def test_artifact_option_contains_id_set_main_and_all_substats() -> None:
     assert "HP実数299" in label
     assert "会心率3.9%" in label
     assert "元素熟知23" in label
+
+
+def test_artifact_table_row_contains_japanese_main_and_all_substats() -> None:
+    row = artifact_table_row(artifact("火魔女花5"))
+    assert row["部位"] == "flower"
+    assert row["ID"] == "火魔女花5"
+    assert row["セット"] == "燃え盛る炎の魔女"
+    assert row["メイン効果"] == "HP実数4780"
+    assert row["サブ効果"] == "会心ダメージ7.8% / HP実数299 / 会心率3.9% / 元素熟知23"
 
 
 def test_deduplicate_inventory_ignores_id_and_substat_order() -> None:

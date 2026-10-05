@@ -19,7 +19,7 @@ from genshin_opt.dust_input import reshape_conditions_from_dict  # noqa: E402
 from genshin_opt.dust_optimizer import ReshapeDecision, analyze_reshape, replace_inventory_artifact  # noqa: E402
 from genshin_opt.akasha import (HOMA_R1_CALIBRATION, ScenarioConfig, calibrate_score,  # noqa: E402
                                  comparison_confidence, score_hutao_akasha)
-from genshin_opt.inventory_view import artifact_option_label  # noqa: E402
+from genshin_opt.inventory_view import artifact_option_label, artifact_table_row  # noqa: E402
 from genshin_opt.models import Artifact, Inventory, Slot, Stat, StatValue, Substat  # noqa: E402
 from genshin_opt.optimizer import OptimizationError, at_least_set_pieces, optimize  # noqa: E402
 from genshin_opt.reshape_adoption import (AdoptionVerdict, compare_artifact_adoption)  # noqa: E402
@@ -45,10 +45,8 @@ TIER_INPUT_NAMES = {
 }
 
 
-def artifact_rows(artifacts: tuple[Artifact, ...]) -> list[dict[str, object]]:
-    return [{"部位": artifact.slot.value, "ID": artifact.id, "セット": artifact.set_name,
-             "メイン": f"{artifact.main_stat.stat.value}: {artifact.main_stat.value}"}
-            for artifact in artifacts]
+def artifact_rows(artifacts: tuple[Artifact, ...]) -> list[dict[str, str]]:
+    return [artifact_table_row(artifact) for artifact in artifacts]
 
 
 def display_substats(artifact: Artifact) -> str:
